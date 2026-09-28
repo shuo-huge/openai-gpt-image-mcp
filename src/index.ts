@@ -100,6 +100,29 @@ const DEFAULT_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image
     }
   });
 
+  // gpt-image-2/2.5 accept arbitrary WIDTHxHEIGHT sizes; earlier models only
+  // the fixed presets. Enforce the documented constraints that hold for every
+  // model: edges divisible by 16, aspect ratio within 1:3-3:1. The remaining
+  // limits (max edge, pixel count) are per-model and enforced by the API.
+  const sizeSchema = z.string().refine(
+    (val) => {
+      if (val === "auto") return true;
+      const match = /^(\d+)x(\d+)$/.exec(val);
+      if (!match) return false;
+      const width = Number(match[1]);
+      const height = Number(match[2]);
+      if (width <= 0 || height <= 0) return false;
+      if (width % 16 !== 0 || height % 16 !== 0) return false;
+      const ratio = width / height;
+      return ratio >= 1 / 3 && ratio <= 3;
+    },
+    { message: 'size must be "auto" or a WIDTHxHEIGHT string with both edges divisible by 16 and an aspect ratio between 1:3 and 3:1 (e.g. 1024x1024, 1536x1024, 2048x2048)' }
+  ).describe('Image size. "auto", or WIDTHxHEIGHT with both edges divisible by 16 and an aspect ratio within 1:3-3:1. Standard sizes: 1024x1024, 1536x1024, 1024x1536. gpt-image-2/2.5 also accept larger custom sizes such as 2048x2048 or 3840x2160.');
+
+  // xhigh/max are exclusive to the gpt-image-2.5 family; older models reject them with a 400.
+  const qualitySchema = z.enum(["auto", "low", "medium", "high", "xhigh", "max"])
+    .describe("Quality. auto, low, medium, high are supported by all GPT image models; xhigh and max are gpt-image-2.5 only.");
+
   // Zod schema for create-image tool input
   const createImageSchema = z.object({
     prompt: z.string().max(32000),
@@ -109,8 +132,8 @@ const DEFAULT_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image
     n: z.number().int().min(1).max(10).optional(),
     output_compression: z.number().int().min(0).max(100).optional(),
     output_format: z.enum(["png", "jpeg", "webp"]).optional(),
-    quality: z.enum(["auto", "high", "medium", "low"]).optional(),
-    size: z.enum(["1024x1024", "1536x1024", "1024x1536", "auto"]).optional(),
+    quality: qualitySchema.optional(),
+    size: sizeSchema.optional(),
     user: z.string().optional(),
     output: z.enum(["base64", "file_output"]).default("base64"),
     file_output: z.string().optional().refine(
@@ -266,8 +289,8 @@ const DEFAULT_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image
     mask: z.string().optional().describe("Optional absolute path or base64 string for a mask image (png < 4MB, same dimensions as the first image). Fully transparent areas indicate where to edit."),
     model: z.string().default(DEFAULT_IMAGE_MODEL).describe(`Image model to use. Defaults to $OPENAI_IMAGE_MODEL, or "gpt-image-1" when unset.`),
     n: z.number().int().min(1).max(10).optional().describe("Number of images to generate (1-10)."),
-    quality: z.enum(["auto", "high", "medium", "low"]).optional().describe("Quality (high, medium, low) - only for gpt-image-1."),
-    size: z.enum(["1024x1024", "1536x1024", "1024x1536", "auto"]).optional().describe("Size of the generated images."),
+    quality: qualitySchema.optional(),
+    size: sizeSchema.optional(),
     user: z.string().optional().describe("Optional user identifier for OpenAI monitoring."),
     output: z.enum(["base64", "file_output"]).default("base64").describe("Output format: base64 or file path."),
     file_output: z.string().refine(absolutePathCheck, { message: "Path must be absolute" }).optional()

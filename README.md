@@ -116,6 +116,8 @@ Also supports supplying an environment files:
 - For `edit-image`, provide a mask image (file path or base64) to control where edits are applied.
 - Provide an environment file with `--env-file path/to/file/.env`
 - Set the default model with `OPENAI_IMAGE_MODEL` (default: `gpt-image-1`), or pass a `model` argument per call to override it.
+- `size` accepts `auto`, the standard sizes (`1024x1024`, `1536x1024`, `1024x1536`), or any `WIDTHxHEIGHT` where both edges are divisible by 16 and the aspect ratio is within 1:3–3:1 (e.g. `2048x2048`, `3840x2160`). Arbitrary sizes require `gpt-image-2` or `gpt-image-2.5-*`; the max edge and pixel limits are enforced by the API.
+- `quality` accepts `auto`, `low`, `medium`, `high`, plus `xhigh` and `max`, which are exclusive to the `gpt-image-2.5` family (older models return HTTP 400 for them).
 - See `src/index.ts` for all options.
 
 ---
