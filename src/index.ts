@@ -42,6 +42,54 @@ if (envFileArgIndex !== -1 && cmdArgs[envFileArgIndex + 1]) {
   console.log("No environment file provided");
 }
 
+// Resolve the API base URL so the server can target self-hosted gateways and
+// third-party relay stations (中转站) instead of api.openai.com.
+const resolveBaseURL = (): string | undefined => {
+  const raw =
+    process.env.OPENAI_BASE_URL ||
+    process.env.OPENAI_API_BASE ||
+    process.env.OPENAI_API_BASE_URL;
+  if (!raw || !raw.trim()) return undefined;
+
+  const baseURL = raw.trim().replace(/\/+$/, "");
+
+  let url: URL;
+  try {
+    url = new URL(baseURL);
+  } catch {
+    throw new Error(`Invalid OPENAI_BASE_URL: ${raw}`);
+  }
+
+  // Relay stations expect the `/v1` prefix. Only append it when the URL has no
+  // path of its own, so explicit paths (e.g. https://host/openai/v1) pass through.
+  if (url.pathname === "" || url.pathname === "/") {
+    url.pathname = "/v1";
+  }
+  return url.toString().replace(/\/+$/, "");
+};
+
+// Build the API client. Azure wins when configured; otherwise the standard
+// client points at OPENAI_BASE_URL when one is set, else at api.openai.com.
+const createOpenAIClient = (): OpenAI => {
+  if (process.env.AZURE_OPENAI_API_KEY) {
+    // AzureOpenAI also reads OPENAI_BASE_URL, and the SDK prefers it over
+    // AZURE_OPENAI_ENDPOINT entirely. Pass the endpoint-derived base URL
+    // explicitly so a relay URL cannot silently hijack the Azure endpoint.
+    const endpoint = process.env.AZURE_OPENAI_ENDPOINT?.trim().replace(/\/+$/, "");
+    return new AzureOpenAI(endpoint ? { baseURL: `${endpoint}/openai` } : {});
+  }
+  const baseURL = resolveBaseURL();
+  if (baseURL) {
+    console.log("Using OpenAI base URL:", baseURL);
+    return new OpenAI({ baseURL });
+  }
+  return new OpenAI();
+};
+
+// Default image model. Relay stations often expose gpt-image-1 under a
+// different ID, so allow overriding it with OPENAI_IMAGE_MODEL.
+const DEFAULT_IMAGE_MODEL = process.env.OPENAI_IMAGE_MODEL?.trim() || "gpt-image-1";
+
 (async () => {
   const server = new McpServer({
     name: "openai-gpt-image-mcp",
@@ -56,7 +104,7 @@ if (envFileArgIndex !== -1 && cmdArgs[envFileArgIndex + 1]) {
   const createImageSchema = z.object({
     prompt: z.string().max(32000),
     background: z.enum(["transparent", "opaque", "auto"]).optional(),
-    model: z.literal("gpt-image-1").default("gpt-image-1"),
+    model: z.string().default(DEFAULT_IMAGE_MODEL).describe(`Image model to use. Defaults to $OPENAI_IMAGE_MODEL, or "gpt-image-1" when unset.`),
     moderation: z.enum(["auto", "low"]).optional(),
     n: z.number().int().min(1).max(10).optional(),
     output_compression: z.number().int().min(0).max(100).optional(),
@@ -94,14 +142,13 @@ if (envFileArgIndex !== -1 && cmdArgs[envFileArgIndex + 1]) {
     "create-image",
     (createImageSchema as any)._def.schema.shape,
     async (args, _extra) => {
-      // If AZURE_OPENAI_API_KEY is defined, use the AzureOpenAI class
-      const openai = process.env.AZURE_OPENAI_API_KEY ? new AzureOpenAI() : new OpenAI();
+      // Azure when AZURE_OPENAI_API_KEY is set, otherwise official OpenAI or a relay
+      const openai = createOpenAIClient();
 
-      // Only allow gpt-image-1
       const {
         prompt,
         background,
-        model = "gpt-image-1",
+        model = DEFAULT_IMAGE_MODEL,
         moderation,
         n,
         output_compression,
@@ -197,7 +244,7 @@ if (envFileArgIndex !== -1 && cmdArgs[envFileArgIndex + 1]) {
     }
   );
 
-  // Zod schema for edit-image tool input (gpt-image-1 only)
+  // Zod schema for edit-image tool input
   const absolutePathCheck = (val: string | undefined) => {
     if (!val) return true;
     // Check for Unix/Linux/macOS absolute paths
@@ -217,7 +264,7 @@ if (envFileArgIndex !== -1 && cmdArgs[envFileArgIndex + 1]) {
     image: z.string().describe("Absolute image path or base64 string to edit."),
     prompt: z.string().max(32000).describe("A text description of the desired edit. Max 32000 chars."),
     mask: z.string().optional().describe("Optional absolute path or base64 string for a mask image (png < 4MB, same dimensions as the first image). Fully transparent areas indicate where to edit."),
-    model: z.literal("gpt-image-1").default("gpt-image-1"),
+    model: z.string().default(DEFAULT_IMAGE_MODEL).describe(`Image model to use. Defaults to $OPENAI_IMAGE_MODEL, or "gpt-image-1" when unset.`),
     n: z.number().int().min(1).max(10).optional().describe("Number of images to generate (1-10)."),
     quality: z.enum(["auto", "high", "medium", "low"]).optional().describe("Quality (high, medium, low) - only for gpt-image-1."),
     size: z.enum(["1024x1024", "1536x1024", "1024x1536", "auto"]).optional().describe("Size of the generated images."),
@@ -237,7 +284,7 @@ if (envFileArgIndex !== -1 && cmdArgs[envFileArgIndex + 1]) {
     { message: "file_output must be an absolute path when output is 'file_output'", path: ["file_output"] }
   );
 
-  // Edit Image Tool (gpt-image-1 only)
+  // Edit Image Tool
   server.tool(
     "edit-image",
     editImageBaseSchema.shape, // <-- Use the base schema shape here
@@ -253,12 +300,12 @@ if (envFileArgIndex !== -1 && cmdArgs[envFileArgIndex + 1]) {
         throw new Error("Invalid 'mask' input: Must be an absolute path or a base64-encoded string.");
       }
 
-      const openai = process.env.AZURE_OPENAI_API_KEY ? new AzureOpenAI() : new OpenAI();
+      const openai = createOpenAIClient();
       const {
         image: imageInput,
         prompt,
         mask: maskInput,
-        model = "gpt-image-1",
+        model = DEFAULT_IMAGE_MODEL,
         n,
         quality,
         size,
@@ -306,7 +353,7 @@ if (envFileArgIndex !== -1 && cmdArgs[envFileArgIndex + 1]) {
       const editParams: any = {
         image: imageFile,
         prompt,
-        model, // Always gpt-image-1
+        model,
         ...(maskFile ? { mask: maskFile } : {}),
         ...(n ? { n } : {}),
         ...(quality ? { quality } : {}),

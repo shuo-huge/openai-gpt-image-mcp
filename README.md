@@ -10,7 +10,7 @@
 
 ---
 
-A Model Context Protocol (MCP) tool server for OpenAI's GPT-4o/gpt-image-1 image generation and editing APIs.
+A Model Context Protocol (MCP) tool server for OpenAI's `gpt-image-1` image generation and editing APIs, with support for relay stations and self-hosted gateways.
 
 - **Generate images** from text prompts using OpenAI's latest models.
 - **Edit images** (inpainting, outpainting, compositing) with advanced prompt control.
@@ -71,6 +71,30 @@ Also supports Azure deployments:
 }
 ```
 
+Also supports relay stations, proxies and self-hosted gateways (中转站 / 代理地址):
+
+```json
+{
+  "mcpServers": {
+    "openai-gpt-image-mcp": {
+      "command": "node",
+      "args": ["/absolute/path/to/dist/index.js"],
+      "env": {
+        "OPENAI_API_KEY": "sk-...",
+        "OPENAI_BASE_URL": "https://your-relay.example.com/v1",
+        "OPENAI_IMAGE_MODEL": "gpt-image-1"
+      }
+    }
+  }
+}
+```
+
+- `OPENAI_BASE_URL` is the preferred name; `OPENAI_API_BASE` and `OPENAI_API_BASE_URL` are also accepted.
+- If the URL has no path (e.g. `https://your-relay.example.com`), `/v1` is appended automatically. Explicit paths (`https://your-relay.example.com/openai/v1`) are used as-is.
+- `OPENAI_IMAGE_MODEL` sets the default model (falls back to `gpt-image-1`). Set it when the relay exposes the image model under a different ID. Both tools also accept a `model` argument that overrides the default for a single call.
+- The relay must implement the image endpoints `POST /images/generations` and `POST /images/edits`.
+- Azure takes priority: when `AZURE_OPENAI_API_KEY` is set, the standard client is not used and `AZURE_OPENAI_ENDPOINT` wins over `OPENAI_BASE_URL`.
+
 Also supports supplying an environment files:
 
 ```json
@@ -91,6 +115,7 @@ Also supports supplying an environment files:
 - For `create-image`, set `n` to generate up to 10 images at once.
 - For `edit-image`, provide a mask image (file path or base64) to control where edits are applied.
 - Provide an environment file with `--env-file path/to/file/.env`
+- Set the default model with `OPENAI_IMAGE_MODEL` (default: `gpt-image-1`), or pass a `model` argument per call to override it.
 - See `src/index.ts` for all options.
 
 ---
